@@ -1,0 +1,4 @@
+streamlit
+google-generativeai
+llama-index
+nltk
