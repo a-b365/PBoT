@@ -3,6 +3,7 @@ from llama_index.core import VectorStoreIndex, Document, Settings, SimpleDirecto
 from llama_index.llms.gemini import Gemini
 from llama_index.embeddings.gemini import GeminiEmbedding
 from google.api_core.exceptions import InvalidArgument
+from google.auth.exceptions import DefaultCredentialsError
 
 # Configure the API key
 # genai.configure(api_key = st.secrets["gemini_api_key"])
@@ -15,7 +16,7 @@ def validate_api_key(api_key):
         Gemini(api_key) # Assuming this initiates the client and checks the key
         return True
     
-    except InvalidArgument:
+    except InvalidArgument or DefaultCredentialsError:
         return False
 
 if "authenticated" not in st.session_state:
