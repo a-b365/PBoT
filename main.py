@@ -1,14 +1,17 @@
-import pymongo
+import io
+import fitz
+import docx
 import gridfs
 import urllib
-import google.generativeai as genai
+import pymongo
 import streamlit as st
+import google.generativeai as genai
 from pymongo.server_api import ServerApi
 from llama_index.llms.gemini import Gemini
-from llama_index.embeddings.gemini import GeminiEmbedding
 from google.api_core.exceptions import InvalidArgument
+from llama_index.embeddings.gemini import GeminiEmbedding
 from google.auth.exceptions import DefaultCredentialsError
-from llama_index.core import VectorStoreIndex, Document, Settings, SimpleDirectoryReader, SummaryIndex
+from llama_index.core import VectorStoreIndex, Document, Settings, SummaryIndex
 
 # Configure the API key
 # genai.configure(api_key = st.secrets["gemini_api_key"])
@@ -55,17 +58,13 @@ if not st.session_state["authenticated"]:
             if validate_api_key(api_key):
                 st.session_state['authenticated'] = True
                 st.session_state['api_key'] = api_key
-
-                # st.success("Login Successful!")
-                st.rerun()  # Immediately rerun to move to the main app
+                st.rerun()
             else:
                 st.write("Invalid Api Key. Please Try Again.")
     
-    # Container for additional information
     with st.container():
         st.markdown("<h3 align='center'>Get your API key from Google AI Studio.</h3>", unsafe_allow_html=True)
         
-        # Link to the Gemini API page in Google AI Studio
         st.markdown("""
             <p align='center'>To generate your API key, visit the <a href="https://ai.google.dev/gemini-api" target="_blank">
             Google AI Studio</a>.</p>
@@ -95,32 +94,16 @@ else:
             for file in fs._files.find():
                 if st.button(file["filename"], key=f"file_{file['_id']}"):
                     st.session_state["file_id"] = file["_id"]
-                    print(st.session_state["file_id"])
 
         st.divider()
-        uploaded_file = st.file_uploader(label="Upload a file", accept_multiple_files=False)
+        uploaded_file = st.file_uploader(label="Upload a file", accept_multiple_files=False, type=["docx","pdf","txt"])
 
         if uploaded_file:
+
             existing_file = fs.find_one({"filename": uploaded_file.name})
-            # @st.cache_data(ttl=600)
-            # def get_data():
-            #     db = client.pbot
-            #     items = db.files.find()
-            #     items = list(items)
-            #     return items
-
-            # items = get_data()
-
-            # # Print results.
-            # for item in items:
-            #     st.write(f"{item['_id']}")
-
-            # for file in uploaded_files:
-            #     # st.write(f"{file.name}")
-            #     with open(f"data/{file.name}", "wb") as f:
-            #         f.write(file.getbuffer())
             if not existing_file:
-                fs.put(uploaded_file, filename=uploaded_file.name)
+                fs.put(uploaded_file.read(), filename=uploaded_file.name)
+                st.rerun()
 
         st.divider()
         st.header("Get your API key from Google AI Studio.")
@@ -145,35 +128,51 @@ else:
         ]
 
 
-    @st.cache_resource(show_spinner=False)
+    # @st.cache_resource(show_spinner=False)
     def load_data():
         with st.spinner(text="Loading and indexing the files – hang on! This should take a few minutes."):
-            # reader = SimpleDirectoryReader(input_dir="data", recursive=True)
-            # docs = reader.load_data()
-            # Create the LLM (Gemini) instance directly
 
-            # Convert each file to a usable document for indexing
-            st.session_state["file_id"] = list(fs._files.find({"filename":"readme.txt"}))[0]["_id"]
+            if "selected_model" not in st.session_state.keys():
+                st.session_state["selected_model"] = "gemini-1.5-flash"
+
+            # Create the LLM (Gemini) instance directly
+            Settings.llm = Gemini(api_key=st.secrets["gemini_api_key"], model=f"models/{st.session_state['selected_model']}", temperature=0.5)
+            Settings.embed_model = GeminiEmbedding(model_name="models/embedding-001", api_key=st.secrets["gemini_api_key"])
+
+            # Convert each file to a usable document for indexing                        
+            if "file_id" not in st.session_state.keys():
+                st.session_state["file_id"] =  list(fs._files.find({"filename":"readme.txt"}))[0]["_id"]
+
+            # st.write(st.session_state["file_id"])
+
             # Retrieve the file content from fs.chunks using the file's _id
-            file_data = fs.get(st.session_state["file_id"]).read()
+            file = fs.get(st.session_state["file_id"])
+
             # Convert binary data to text (assuming text files or similar)
-            file_content = file_data.decode('utf-8', errors='ignore')
+            file_ext = file.filename.split(".")[-1].lower()
+
+            if file_ext == "docx":
+                doc = docx.Document(io.BytesIO(file.read()))
+                file_content = "\n".join([para.text for para in doc.paragraphs])
+
+            elif file_ext == "pdf":
+                pdf = fitz.open(stream=io.BytesIO(file.read()), filetype="pdf")
+                file_content = ""
+                for page in range(pdf.page_count):
+                    page = pdf.load_page(page)
+                    file_content += page.get_text("text")
                     
+            else:
+                file_content = file.read().decode("utf-8", errors="ignore")            
+
             # Create a document with content and metadata (adjust fields as needed)
             text_list = [file_content]
             docs = [Document(text=t) for t in text_list]
-            st.session_state['selected_model'] = "gemini-pro"
 
-            Settings.llm = Gemini(api_key=st.secrets["gemini_api_key"], model=f"models/{st.session_state['selected_model']}", temperature=0.5)
-            print(st.session_state["selected_model"])
-            Settings.embed_model = GeminiEmbedding(model_name="models/embedding-001", api_key=st.secrets["gemini_api_key"])
             # Directly use the LLM when creating the VectorStoreIndex
             index = SummaryIndex.from_documents(docs, llm=Settings.llm, embed_model=Settings.embed_model)
             return index
     
-    # except ValueError or NotFound:
-    #     st.write("Use another model that supports content generation.")
-
     index = load_data()
 
     chat_engine = index.as_chat_engine(chat_mode="condense_question", verbose=True)
